@@ -1,6 +1,9 @@
 import datetime as dt
 import pytz
 
+START_IMMEDIATELY = False            # off-hours testing
+USE_YDAY_WHEN_TODAY_EMPTY = True    # off-hours testing
+
 # --------- IDs ---------
 CLIENT_ID = "YOUR_APP_ID"   # e.g., ABCD12345-100
 TOKEN_PATH = "accessToken/token.txt"    # RAW v3 JWT only
@@ -15,8 +18,6 @@ ORB_START_IST = dt.time(9, 15)
 ORB_END_IST   = dt.time(9, 30)
 SQUARE_OFF_IST= dt.time(15, 20)
 
-START_IMMEDIATELY = False            # off-hours testing
-USE_YDAY_WHEN_TODAY_EMPTY = True    # off-hours testing
 
 # --------- Trading / Risk ---------
 LOT_SIZE                 = 75
@@ -88,3 +89,19 @@ DIAG_INTERVAL_SEC       = 15 * 60   # minimum seconds between DIAG_NO_ENTRY logs
 DIAG_ONLY_ON_CHANGE     = True      # log only if the reason set changed vs last time
 
 REARM_USING_OR_BAND = True
+
+
+# --- Drawdown (separate for core vs scalp) ---
+CORE_DD_HARD_DROP_PCT = 10.0
+SCALP_DD_HARD_DROP_PCT = 8.0
+CORE_MIN_PEAK_GAIN_BEFORE_DD_PCT = 12.0   # require +12% over entry before DD triggers (core)
+SCALP_MIN_PEAK_GAIN_BEFORE_DD_PCT = 6.0   # require +6% over entry before DD triggers (scalp)
+
+# --- Breakeven stop (when trade goes your way) ---
+BREAKEVEN_AT_PROFIT_PCT = 10.0   # when premium gain ≥ 10%, move SL to ~breakeven
+BREAKEVEN_OFFSET_PCT    = 0.5    # keep tiny cushion (0.5% above EP)
+
+# --- Scalp stacking guard ---
+SCALP_MAX_OPEN             = 1   # max simultaneous scalp positions
+SCALP_MAX_PER_SIDE         = 1   # at most 1 scalp per side (CE/PE)
+SCALP_ENTRY_MIN_GAP_SEC    = 180 # min seconds between any two scalp entries

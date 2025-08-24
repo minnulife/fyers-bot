@@ -46,6 +46,25 @@ try:
 except Exception:
     CORE_REARM_MIN_SECS = 120  # optional time-based re-arm floor for core
 
+try:
+    from config import CORE_DD_HARD_DROP_PCT, SCALP_DD_HARD_DROP_PCT
+except Exception:
+    CORE_DD_HARD_DROP_PCT, SCALP_DD_HARD_DROP_PCT = 10.0, 8.0
+try:
+    from config import CORE_MIN_PEAK_GAIN_BEFORE_DD_PCT, SCALP_MIN_PEAK_GAIN_BEFORE_DD_PCT
+except Exception:
+    CORE_MIN_PEAK_GAIN_BEFORE_DD_PCT, SCALP_MIN_PEAK_GAIN_BEFORE_DD_PCT = 12.0, 6.0
+try:
+    from config import BREAKEVEN_AT_PROFIT_PCT, BREAKEVEN_OFFSET_PCT
+except Exception:
+    BREAKEVEN_AT_PROFIT_PCT, BREAKEVEN_OFFSET_PCT = 10.0, 0.5
+try:
+    from config import SCALP_MAX_OPEN, SCALP_MAX_PER_SIDE, SCALP_ENTRY_MIN_GAP_SEC
+except Exception:
+    SCALP_MAX_OPEN, SCALP_MAX_PER_SIDE, SCALP_ENTRY_MIN_GAP_SEC = 1, 1, 180
+
+
+
 # BB Scalp knobs
 from config import (
     SCALP_ENABLED, SCALP_TP_PCT, SCALP_SL_PCT, SCALP_MAX_HOLD_MIN, SCALP_COOLDOWN_SEC
@@ -91,6 +110,10 @@ class Engine:
 
         # Optional time-based re-arm tracker (in addition to your pullback/OR-band logic)
         self._last_core_entry_time = {"CE": None, "PE": None}
+
+        # Track last scalp entry times
+        self.last_scalp_entry_ts: Optional[dt.datetime] = None
+        self.last_scalp_entry_ts_by_side = {"CE": None, "PE": None}
 
         # ---- Auth check (tolerant) ----
         prof = {}
@@ -162,6 +185,10 @@ class Engine:
         log("ENTER", symbol=symbol, side=side, price=entry, qty=LOT_SIZE,
             reason="New SCALP", day_pnl=self.realized_pnl)
         self.log_pos_state(pos, ltp, tag="ENTER_STATE")
+        # stamp scalp entry times
+        now = now_ist()
+        self.last_scalp_entry_ts = now
+        self.last_scalp_entry_ts_by_side[side] = now
 
     def exit_position(self, pos: Position, reason: str):
         exit_time = now_ist()
@@ -221,10 +248,44 @@ class Engine:
     def can_new_entry(self, est_entry_price: float) -> bool:
         return self.can_new_entry_with_sl(est_entry_price, INIT_SL_PCT)
 
+    # Add a guard: can we open a scalp right now
+    def can_open_scalp(self, side: str) -> bool:
+        # cap total open scalps
+        open_scalps = [p for p in self.positions if not p.is_core]
+        if len(open_scalps) >= SCALP_MAX_OPEN:
+            return False
+        # cap per side
+        if SCALP_MAX_PER_SIDE > 0 and any((p.side == side and not p.is_core) for p in open_scalps):
+            return False
+        # min gap between any two scalp entries
+        now = now_ist()
+        if self.last_scalp_entry_ts and (now - self.last_scalp_entry_ts).total_seconds() < SCALP_ENTRY_MIN_GAP_SEC:
+            return False
+        # min gap per side
+        last_side_ts = self.last_scalp_entry_ts_by_side.get(side)
+        if last_side_ts and (now - last_side_ts).total_seconds() < SCALP_ENTRY_MIN_GAP_SEC:
+            return False
+        return True
+
+
+
     # ============ Position management ============
 
     def trail_sl(self, pos: Position, ltp: float):
         profit_pct = (ltp - pos.entry_price) * 100.0 / pos.entry_price
+
+        # 1) Move SL to (near) breakeven once we have cushion
+        if BREAKEVEN_AT_PROFIT_PCT is not None and profit_pct >= BREAKEVEN_AT_PROFIT_PCT:
+            be = pos.entry_price * (1 + BREAKEVEN_OFFSET_PCT / 100.0)
+            if pos.sl_price < be:
+                old = pos.sl_price
+                pos.sl_price = be
+                log("SL_TO_BE", symbol=pos.symbol, side=pos.side, price=ltp,
+                    reason=f"Profit {profit_pct:.1f}% -> SL {old:.2f} -> {pos.sl_price:.2f}",
+                    day_pnl=self.realized_pnl)
+                self.log_pos_state(pos, ltp, tag="SL_UPDATE", extra="breakeven")
+
+        # 2) Then apply step trailing (as before)
         for level, sl_from_entry_pct in sorted(TRAIL_STEPS, key=lambda x: x[0]):
             if profit_pct >= level and pos.last_trail_level_hit < level:
                 new_sl = pos.entry_price * (1 + sl_from_entry_pct / 100.0)
@@ -238,11 +299,16 @@ class Engine:
                     self.log_pos_state(pos, ltp, tag="SL_UPDATE", extra=f"level={level}")
 
     def dd_exit(self, pos: Position, ltp: float) -> bool:
-        # Only activate DD logic if peak gained a minimum over entry
-        if pos.peak_price < pos.entry_price * (1 + MIN_PEAK_GAIN_BEFORE_DD_PCT / 100.0):
+        # separate cushions/thresholds
+        min_gain = CORE_MIN_PEAK_GAIN_BEFORE_DD_PCT if pos.is_core else SCALP_MIN_PEAK_GAIN_BEFORE_DD_PCT
+        dd_thr = CORE_DD_HARD_DROP_PCT if pos.is_core else SCALP_DD_HARD_DROP_PCT
+
+        # require peak > entry by min_gain before activating DD logic
+        if pos.peak_price < pos.entry_price * (1 + min_gain / 100.0):
             return False
+
         dd_pct = (pos.peak_price - ltp) * 100.0 / pos.peak_price
-        if dd_pct >= DD_HARD_DROP_PCT:
+        if dd_pct >= dd_thr:
             self.exit_position(pos, reason=f"Hard DD {dd_pct:.1f}% from peak")
             return True
         return False
@@ -589,13 +655,13 @@ class Engine:
                 # ---- BB Range Scalp (if no core entered this tick) ----
                 if SCALP_ENABLED and not entered_this_tick:
                     can_scalp = (
-                        (self.scalp_cooldown_until is None or now_ist() >= self.scalp_cooldown_until)
-                        and self.realized_pnl > -MAX_DAILY_LOSS_INR
-                        and len(self.positions) < MAX_CONCURRENT_POS
+                            (self.scalp_cooldown_until is None or now_ist() >= self.scalp_cooldown_until)
+                            and self.realized_pnl > -MAX_DAILY_LOSS_INR
+                            and len(self.positions) < MAX_CONCURRENT_POS
                     )
                     if can_scalp:
                         scalp_side = self.bb_scalp.signal()  # 'CE'/'PE'/None
-                        if scalp_side:
+                        if scalp_side and self.can_open_scalp(scalp_side):
                             try:
                                 est_sym = self.dc.pick_atm_symbol(scalp_side)
                                 est_entry = self.dc.get_ltp(est_sym)
