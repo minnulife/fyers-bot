@@ -28,8 +28,8 @@ ALLOW_OPPOSITE_IF_SAFE   = True
 
 MAX_DAILY_LOSS_INR       = 2000
 COST_PER_SIDE_INR        = 20
-INIT_SL_PCT              = 25
-INIT_TP_PCT              = 40
+INIT_SL_PCT              = 20
+INIT_TP_PCT              = 25
 
 TRAIL_STEPS = [
     (10,  -5),
@@ -48,23 +48,23 @@ USE_PROJECTED_RISK_BLOCK = True
 
 # --------- RSI ---------
 USE_RSI           = True
-RSI_PERIOD        = 14
-RSI_TIMEFRAME_MIN = 5
+RSI_PERIOD        = 10
+RSI_TIMEFRAME_MIN = 3
 RSI_LONG_MIN      = 55
 RSI_SHORT_MAX     = 45
 
 # --- BB Range Scalper (sideways mean reversion) ---
 SCALP_ENABLED          = True     # master switch
-SCALP_TP_PCT           = 7.0      # target on option premium (e.g., 5–10%)
+SCALP_TP_PCT           = 6.5      # target on option premium (e.g., 5–10%)
 SCALP_SL_PCT           = 8.0      # stop-loss on option premium
-SCALP_MAX_HOLD_MIN     = 12       # time-based exit if no TP (minutes)
+SCALP_MAX_HOLD_MIN     = 10       # time-based exit if no TP (minutes)
 SCALP_COOLDOWN_SEC     = 120      # wait after a scalp exit before next scalp
 
 # Signal settings
 SCALP_BB_PERIOD        = 20       # Bollinger window (on 1m closes)
 SCALP_BB_STD           = 2.0      # Band width
-SCALP_RSI_MIN          = 40       # keep trades in "range" regime
-SCALP_RSI_MAX          = 60
+SCALP_RSI_MIN          = 45       # keep trades in "range" regime
+SCALP_RSI_MAX          = 55
 SCALP_LOOKBACK_MIN     = 90       # minutes of 1m data to compute BB/RSI
 
 
