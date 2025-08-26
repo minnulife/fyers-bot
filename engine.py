@@ -318,7 +318,7 @@ class Engine:
         profit_pct = (ltp - pos.entry_price) * 100.0 / pos.entry_price
         if held_min <= MOMENTUM_FAST_MIN:
             return
-        if profit_pct >= SLOW_PROFIT_PCT and held_min >= TIME_BASEED_EXIT_MIN:
+        if profit_pct >= SLOW_PROFIT_PCT and held_min >= TIME_BASED_EXIT_MIN:
             pass  # typo guard (kept for backward compat)
         if profit_pct >= SLOW_PROFIT_PCT and held_min >= TIME_BASED_EXIT_MIN:
             reduced_tp = pos.entry_price * (1 + REDUCED_TP_PCT / 100.0)
