@@ -40,6 +40,8 @@ class ORBStrategy:
         return rsi_val
 
     def rsi_allows(self, direction: str, rsi_val: Optional[float]) -> bool:
+        if rsi_val is None:
+            return False  # block if RSI not ready
         if not USE_RSI or rsi_val is None:
             return True
         if direction == "UP":

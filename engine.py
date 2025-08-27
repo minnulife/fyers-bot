@@ -77,7 +77,8 @@ from data import DataClient, utc_epoch_to_ist_dt
 from indicators import compute_rsi_from_1m
 from strategy.orb import ORBStrategy
 from strategy.bb_scalp import BBScalp
-
+from strategy.supertrend_trend import SupertrendTrend
+from strategy.vwap_reversion import VWAPReversion
 
 class Engine:
     def __init__(self, fyers):
@@ -114,6 +115,11 @@ class Engine:
         # Track last scalp entry times
         self.last_scalp_entry_ts: Optional[dt.datetime] = None
         self.last_scalp_entry_ts_by_side = {"CE": None, "PE": None}
+
+        self.strats = [
+            SupertrendTrend(self.dc, log, INDEX_SYMBOL, period=10, multiplier=3.0, tf_min=5),
+            VWAPReversion(self.dc, log, INDEX_SYMBOL, band_k=2.0, lookback_min=120),
+        ]
 
         # ---- Auth check (tolerant) ----
         prof = {}
@@ -267,7 +273,38 @@ class Engine:
             return False
         return True
 
+    # =========== simple regime detection + router ===========
+    def detect_regime(self, idx_ltp: float, rsi_val: Optional[float]) -> str:
+        # use ORB buffers + RSI to classify
+        if rsi_val is None:
+            return "unknown"
+        # trend if far outside OR buffers
+        hi_buf = getattr(self.orb, "entry_hi_buf", None)
+        lo_buf = getattr(self.orb, "entry_lo_buf", None)
+        if hi_buf and idx_ltp > hi_buf and rsi_val > 55:
+            return "trend_up"
+        if lo_buf and idx_ltp < lo_buf and rsi_val < 45:
+            return "trend_down"
+        return "range"
 
+    def pick_secondary_signal(self, idx_ltp: float, rsi_val: Optional[float]) -> Optional[str]:
+        regime = self.detect_regime(idx_ltp, rsi_val)
+        # route: trend → Supertrend; range → VWAP reversion
+        ordered = []
+        if regime == "trend_up" or regime == "trend_down":
+            ordered = [s for s in self.strats if s.name == "supertrend_trend"] + [s for s in self.strats if
+                                                                                  s.name != "supertrend_trend"]
+        else:
+            ordered = [s for s in self.strats if s.name == "vwap_reversion"] + [s for s in self.strats if
+                                                                                s.name != "vwap_reversion"]
+
+        for s in ordered:
+            sig = s.signal(idx_ltp, rsi_val)
+            if sig:
+                self.maybe_log_momentum_price_changes(idx_ltp, rsi_val)  # context
+                self.log_signal_diagnostics(idx_ltp, rsi_val, force=True)  # explain rejections too
+                return sig
+        return None
 
     # ============ Position management ============
 
@@ -671,6 +708,20 @@ class Engine:
                             if self.can_new_entry_with_sl(est_entry or 0.0, SCALP_SL_PCT):
                                 self.create_scalp_position(scalp_side)
                                 entered_this_tick = True
+                # ---- Secondary strategies (if no core entered this tick) ----
+                if not entered_this_tick:
+                    sec_side = self.pick_secondary_signal(idx, rsi_val)  # 'CE'/'PE'/None
+                    if sec_side:
+                        try:
+                            est_sym = self.dc.pick_atm_symbol(sec_side)
+                            est_entry = self.dc.get_ltp(est_sym)
+                        except Exception:
+                            est_entry = None
+
+                        # use scalp risk for secondaries by default (quick targets)
+                        if self.can_new_entry_with_sl(est_entry or 0.0, SCALP_SL_PCT):
+                            self.create_scalp_position(sec_side)
+                            entered_this_tick = True
 
                 # If nothing entered, log diagnostics (throttled & on-change)
                 if not entered_this_tick:
