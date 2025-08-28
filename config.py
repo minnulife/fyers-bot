@@ -10,7 +10,7 @@ TOKEN_PATH = "accessToken/token.txt"    # RAW v3 JWT only
 
 # --------- Symbols ---------
 INDEX_SYMBOL = "NSE:NIFTY50-INDEX"
-EXPIRY_CODE  = "25AUG"      # update daily (e.g., 25AUG, 25SEP)
+EXPIRY_CODE  = "30SEP"      # update daily (e.g., 25AUG, 25SEP)
 
 # --------- Time / Session ---------
 IST = pytz.timezone("Asia/Kolkata")
