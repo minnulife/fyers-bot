@@ -710,7 +710,11 @@ class Engine:
                                 entered_this_tick = True
                 # ---- Secondary strategies (if no core entered this tick) ----
                 if not entered_this_tick:
-                    sec_side = self.pick_secondary_signal(idx, rsi_val)  # 'CE'/'PE'/None
+                    try:
+                        sec_side = self.pick_secondary_signal(idx, rsi_val)  # 'CE'/'PE'/None
+                    except Exception as e:
+                        log("STRAT_ERR", reason=f"secondary signal error: {e}", day_pnl=self.realized_pnl)
+                        sec_side = None
                     if sec_side:
                         try:
                             est_sym = self.dc.pick_atm_symbol(sec_side)
