@@ -299,10 +299,12 @@ class Engine:
                                                                                 s.name != "vwap_reversion"]
 
         for s in ordered:
-            sig = s.signal(idx_ltp, rsi_val)
+            try:
+                sig = s.signal(idx_ltp, rsi_val)
+            except Exception as e:
+                log("STRAT_ERR", reason=f"{s.name}: {e}", day_pnl=self.realized_pnl)
+                continue
             if sig:
-                self.maybe_log_momentum_price_changes(idx_ltp, rsi_val)  # context
-                self.log_signal_diagnostics(idx_ltp, rsi_val, force=True)  # explain rejections too
                 return sig
         return None
 
