@@ -9,14 +9,14 @@ CLIENT_ID = "YOUR_APP_ID"   # e.g., ABCD12345-100
 TOKEN_PATH = "accessToken/token.txt"    # RAW v3 JWT only
 
 # --------- Symbols ---------
-INDEX_SYMBOL = "NSE:NIFTY50-INDEX"
-EXPIRY_CODE  = "30SEP"      # update daily (e.g., 25AUG, 25SEP)
+INDEX_SYMBOL = "NSE:NIFTY50-INDEX".strip()
+EXPIRY_CODE  = "25SEP".strip()      # update daily (e.g., 25AUG, 25SEP)
 
 # --------- Time / Session ---------
 IST = pytz.timezone("Asia/Kolkata")
 ORB_START_IST = dt.time(9, 15)
 ORB_END_IST   = dt.time(9, 30)
-SQUARE_OFF_IST= dt.time(15, 20)
+SQUARE_OFF_IST= dt.time(15, 29)
 
 
 # --------- Trading / Risk ---------
@@ -57,7 +57,7 @@ RSI_SHORT_MAX     = 45
 SCALP_ENABLED          = True     # master switch
 SCALP_TP_PCT           = 6.5      # target on option premium (e.g., 5–10%)
 SCALP_SL_PCT           = 8.0      # stop-loss on option premium
-SCALP_MAX_HOLD_MIN     = 10       # time-based exit if no TP (minutes)
+SCALP_MAX_HOLD_MIN     = 8       # time-based exit if no TP (minutes)
 SCALP_COOLDOWN_SEC     = 120      # wait after a scalp exit before next scalp
 
 # Signal settings
@@ -68,12 +68,11 @@ SCALP_RSI_MAX          = 55
 SCALP_LOOKBACK_MIN     = 90       # minutes of 1m data to compute BB/RSI
 
 
-
 # --------- Re-entry guards ---------
 PREVENT_DUPLICATE_SIDE = True
 REARM_ON_PULLBACK      = True
 REARM_PULLBACK_PCT     = 0.02
-REARM_USING_OR_BAND    = False
+REARM_USING_OR_BAND    = True
 
 # --------- Logging ---------
 LOG_DIR = "logs"
@@ -87,9 +86,6 @@ RSI_HYSTERESIS          = 1.0       # RSI points to reduce flip-flop around thre
 # --- Diagnostics throttling ---
 DIAG_INTERVAL_SEC       = 15 * 60   # minimum seconds between DIAG_NO_ENTRY logs
 DIAG_ONLY_ON_CHANGE     = True      # log only if the reason set changed vs last time
-
-REARM_USING_OR_BAND = True
-
 
 # --- Drawdown (separate for core vs scalp) ---
 CORE_DD_HARD_DROP_PCT = 10.0
@@ -105,3 +101,17 @@ BREAKEVEN_OFFSET_PCT    = 0.5    # keep tiny cushion (0.5% above EP)
 SCALP_MAX_OPEN             = 1   # max simultaneous scalp positions
 SCALP_MAX_PER_SIDE         = 1   # at most 1 scalp per side (CE/PE)
 SCALP_ENTRY_MIN_GAP_SEC    = 180 # min seconds between any two scalp entries
+
+# --- Decisiveness / momentum ---
+RSI_SLOPE_BARS = 3           # how many recent RSI prints to compare
+RSI_SLOPE_MIN_UP = 1.0       # CE requires ΔRSI >= +1.0
+RSI_SLOPE_MIN_DOWN = -1.0    # PE requires ΔRSI <= -1.0
+
+# --- Impulse exit (prove-it early) ---
+IMPULSE_WINDOW_SEC = 120     # within 2 minutes of entry
+IMPULSE_WIN_PCT   = 1.0      # if +1.0% not achieved in window -> scratch-out
+IMPULSE_LOSS_PCT  = -3.0     # if -3.0% hit in window -> immediate exit
+
+# (optional) shorter scalp timeout (keeps same logic, just quicker)
+# SCALP_MAX_HOLD_MIN = 8
+

@@ -67,7 +67,7 @@ except Exception:
 
 # BB Scalp knobs
 from config import (
-    SCALP_ENABLED, SCALP_TP_PCT, SCALP_SL_PCT, SCALP_MAX_HOLD_MIN, SCALP_COOLDOWN_SEC
+    SCALP_ENABLED, SCALP_TP_PCT, SCALP_SL_PCT, SCALP_MAX_HOLD_MIN, SCALP_COOLDOWN_SEC, RSI_SLOPE_BARS
 )
 
 from models import Position
@@ -79,6 +79,7 @@ from strategy.orb import ORBStrategy
 from strategy.bb_scalp import BBScalp
 from strategy.supertrend_trend import SupertrendTrend
 from strategy.vwap_reversion import VWAPReversion
+from collections import deque
 
 class Engine:
     def __init__(self, fyers):
@@ -115,6 +116,8 @@ class Engine:
         # Track last scalp entry times
         self.last_scalp_entry_ts: Optional[dt.datetime] = None
         self.last_scalp_entry_ts_by_side = {"CE": None, "PE": None}
+
+        self.rsi_window = deque(maxlen=RSI_SLOPE_BARS)  # store last N RSI prints
 
         self.strats = [
             SupertrendTrend(self.dc, log, INDEX_SYMBOL, period=10, multiplier=3.0, tf_min=5),
@@ -388,6 +391,8 @@ class Engine:
             df = pd.DataFrame(rows)
             post_open = df[df['ts'].dt.time >= ORB_START_IST]
             new_rsi = compute_rsi_from_1m(post_open, period=RSI_PERIOD, tf_min=RSI_TIMEFRAME_MIN)
+            if new_rsi is not None:
+                self.rsi_push(new_rsi)
             return new_rsi if new_rsi is not None else current_rsi
         except Exception:
             return current_rsi
@@ -472,6 +477,53 @@ class Engine:
                 reason=f"Zone {self.last_price_zone or 'NA'} -> {zone} (IDX={idx_ltp:.2f})",
                 day_pnl=self.realized_pnl)
             self.last_price_zone = zone
+
+    #Helpers
+    def rsi_push(self, rsi_val):
+        if rsi_val is not None:
+            if not self.rsi_window or rsi_val != self.rsi_window[-1]:
+                self.rsi_window.append(float(rsi_val))
+
+    def rsi_slope(self) -> float | None:
+        if len(self.rsi_window) < 2:
+            return None
+        return self.rsi_window[-1] - self.rsi_window[0]
+
+    def rsi_momentum_allows(self, side: str, rsi_val) -> bool:
+        # Require RSI present + slope aligned (decisive momentum)
+        if rsi_val is None:
+            return False
+        slope = self.rsi_slope()
+        if slope is None:
+            return False
+        if side == "CE":
+            return slope >= RSI_SLOPE_MIN_UP
+        else:
+            return slope <= RSI_SLOPE_MIN_DOWN
+
+    def impulse_check(self, pos, ltp: float) -> bool:
+        """
+        Enforce early follow-through:
+          - If within IMPULSE_WINDOW_SEC and PnL% <= IMPULSE_LOSS_PCT -> exit now
+          - If at end of window and PnL% < IMPULSE_WIN_PCT -> scratch out
+        Returns True if exited.
+        """
+        age_sec = (now_ist() - pos.entry_time).total_seconds()
+        if age_sec < 5:  # ignore first ticks
+            return False
+        chg_pct = (ltp - pos.entry_price) * 100.0 / pos.entry_price
+
+        # fast fail if loss threshold hit any time within window
+        if age_sec <= IMPULSE_WINDOW_SEC and chg_pct <= IMPULSE_LOSS_PCT:
+            self.exit_position(pos, reason=f"IMPULSE_EXIT loss {chg_pct:.1f}% @ {int(age_sec)}s")
+            return True
+
+        # at end of window, require min win threshold
+        if age_sec >= IMPULSE_WINDOW_SEC and age_sec < IMPULSE_WINDOW_SEC + 2.0:
+            if chg_pct < IMPULSE_WIN_PCT:
+                self.exit_position(pos, reason=f"IMPULSE_EXIT no follow-thru {chg_pct:.1f}% @ {int(age_sec)}s")
+                return True
+        return False
 
     # ============ Diagnostics (throttled & only on change) ============
 
@@ -568,7 +620,7 @@ class Engine:
             raise RuntimeError("History failed (1m).")
 
         rsi_val = self.orb.compute_orb(c)
-
+        self.rsi_push(rsi_val)
         try:
             while True:
                 # Square-off
@@ -617,6 +669,9 @@ class Engine:
 
                     p.record(now_ist(), cp)
 
+                    if self.impulse_check(p, cp):
+                        continue
+
                     # Trailing SL steps
                     self.trail_sl(p, cp)
 
@@ -659,6 +714,9 @@ class Engine:
 
                 if try_long or try_short:
                     side = 'CE' if try_long else 'PE'
+                    if side and not self.rsi_momentum_allows(side, rsi_val):
+                        # momentum not decisive; block this tick
+                        side = None
                     # prevent duplicate same-side core
                     if PREVENT_DUPLICATE_SIDE and self.has_open_core_side(side):
                         side = None
@@ -710,6 +768,7 @@ class Engine:
                             if self.can_new_entry_with_sl(est_entry or 0.0, SCALP_SL_PCT):
                                 self.create_scalp_position(scalp_side)
                                 entered_this_tick = True
+
                 # ---- Secondary strategies (if no core entered this tick) ----
                 if not entered_this_tick:
                     try:
@@ -717,17 +776,39 @@ class Engine:
                     except Exception as e:
                         log("STRAT_ERR", reason=f"secondary signal error: {e}", day_pnl=self.realized_pnl)
                         sec_side = None
+
+                    # RSI slope gate first (decisive momentum)
+                    if sec_side and not self.rsi_momentum_allows(sec_side, rsi_val):
+                        try:
+                            slope = self.rsi_slope()
+                            slope_txt = f"{slope:.2f}" if slope is not None else "NA"
+                        except Exception:
+                            slope_txt = "NA"
+                        log("SIG_BLOCK", reason=f"{sec_side} blocked by RSI slope (ΔRSI={slope_txt})", day_pnl=self.realized_pnl)
+                        sec_side = None
+
+                    # Optional: scalp concurrency guard (if you implemented can_open_scalp)
+                    if sec_side and hasattr(self, "can_open_scalp") and not self.can_open_scalp(sec_side):
+                        log("SIG_BLOCK", reason=f"{sec_side} scalp blocked by can_open_scalp()",
+                            day_pnl=self.realized_pnl)
+                        sec_side = None
+
+                    # Try to estimate entry (ATM option) for projected risk check
+                    est_entry = None
                     if sec_side:
                         try:
                             est_sym = self.dc.pick_atm_symbol(sec_side)
                             est_entry = self.dc.get_ltp(est_sym)
-                        except Exception:
-                            est_entry = None
+                        except Exception as e:
+                            log("QUOTES_ERR", reason=f"estimate failed for {sec_side}: {e}", day_pnl=self.realized_pnl)
 
-                        # use scalp risk for secondaries by default (quick targets)
-                        if self.can_new_entry_with_sl(est_entry or 0.0, SCALP_SL_PCT):
-                            self.create_scalp_position(sec_side)
-                            entered_this_tick = True
+                    # Projected-risk gate + place scalp
+                    if sec_side and est_entry and self.can_new_entry_with_sl(est_entry, SCALP_SL_PCT):
+                        self.create_scalp_position(sec_side)
+                        entered_this_tick = True
+                    else:
+                        # Keep sec_side=None so diagnostics can run below if nothing entered
+                        sec_side = None
 
                 # If nothing entered, log diagnostics (throttled & on-change)
                 if not entered_this_tick:
